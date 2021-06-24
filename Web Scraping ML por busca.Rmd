@@ -1,0 +1,117 @@
+---
+title: "Web Scraping ML por busca"
+author: "Yuri Taba"
+date: "18/06/2020"
+output: html_document
+---
+
+Usando o pacote rvest para extrair informações de venda de produtos do Mercado Livre a partir da busca por palavras chave.
+As informações extraídas incluem o nome da loja/vendedor, o título do anúncio, preço do produto e a quantidade de unidades vendidas.
+
+A quantidade de unidades vendidas é crucial para este projeto. O Mercado Livre fornece informações sobre a quantidade vendida de cada anúncio, porém não se sabe quando as unidades foram vendidas. Uma análise apenas desta informação não é suficiente para descobrirmos os anúncios com maior demanda atualmente. Por isso, a proposta é realizar a raspagem em dois (ou mais) tempos para conseguir captar o número de unidades vendidas em determinado período.
+
+Primeiro precisamos identificar os principais vendedores de determinado seguimento, faremos isto com buscas por palavras chave. Em seguida, podemos buscar maiores informações sobre as vendas destes vendedores específicos.
+
+```{r, message=F, warning=F}
+library(tidyverse)
+library(rvest)
+library(stringr)
+```
+
+# Raspagem dos dados - identificando maiores vendedores
+
+```{r}
+# Busca por "prateleira"
+
+url_base <- "https://lista.mercadolivre.com.br/casa-moveis-decoracao/prateleira_Desde_NUMITEM"
+
+
+df <- data.frame()
+
+# Pegar as 10 primeiras páginas de busca
+
+for (i in 1:10){
+  
+  print(i)
+
+# São 48 itens orgânicos por página e 3 patrocinados. Cada página extrai 51 itens, mas o loop deve ser a cada 48
+  
+  i <- (i - 1) * 48 + 1
+  
+  url_pesquisa <- str_replace(url_base, "NUMITEM", as.character(i))
+  pagina <- read_html(url_pesquisa)
+
+  titulos <- 
+    html_nodes(pagina, xpath = "//li/div/div/a") |> 
+    html_attr(name = "title")
+
+  links <- 
+    html_nodes(pagina, xpath = "//li/div/div/a") |> 
+    html_attr(name = "href")
+    
+
+  tabela_titulos <- data.frame(titulos, links)
+
+  df <- bind_rows(df, tabela_titulos)
+
+}
+
+vendas <- data.frame()
+
+for (link in df$links){
+  
+  pagina <- read_html(link)
+  
+  link_produto <- as.character(link)
+  
+  link_vendedor <- 
+    html_nodes(pagina, xpath = "//div[@class = 'ui-box-component ui-box-component-pdp__visible--desktop']/a") |> 
+    html_attr(name = "href")
+  
+  titulo <- 
+    html_nodes(pagina, xpath = "//h1") |> 
+    html_text()
+
+  quantidade <- 
+    html_nodes(pagina, xpath = "//span[@class = 'ui-pdp-subtitle']") |> 
+    html_text()
+  
+  preco <- 
+    html_nodes(pagina, xpath = "//span[@class = 'price-tag ui-pdp-price__part']/meta") |> 
+    html_attr(name = "content")
+  
+  vendas <- data.frame(link_vendedor, link_produto, titulo, preco, quantidade)
+  
+  df <- bind_rows(vendas, tabela)
+  
+}
+```
+
+# Limpeza
+
+```{r}
+# transformando preço em numérico
+vendas$preco <- as.numeric(vendas$preco)
+
+# extraindo quantidade vendida usando regex
+vendas$quantidade <- str_extract(vendas$quantidade, "[0-9]+")
+```
+
+Selecionando as URLs que começam com "click" podemos identificar os produtos patrocinados, que não aparecem na busca de maneira orgânica.
+
+```{r}
+vendas <- vendas |> 
+  filter(!str_detect(vendas$link_produto, "click"))
+```
+
+# Seleção vendedores
+
+A escolha das lojas que analisaremos é feita considerando o número de anúncios que cada uma das lojas possui entre as 10 primeiras páginas da pesquisa pela palavra chave.
+Isto considera o algoritmo de posicionamento de anúncios do mercado livre, que tende a exibir nas primeiras colocações anúncios de vendedores com maior reputação, com disponibilidade do produto em Fullfilment, com melhores preços, etc. Por este motivo que retiramos da amostra os anúncios patrocinados.
+
+```{r}
+vendas |> 
+  count(link_vendedor, sort = TRUE) |> 
+  slice_head(n = 10)
+```
+
